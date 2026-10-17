@@ -151,6 +151,9 @@ tr.sec td{font-family:var(--display);font-weight:600;letter-spacing:.05em;text-t
 .card h3{font-family:var(--display);font-weight:600;font-size:17px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 2px}
 .trow{display:grid;grid-template-columns:52px 1fr 92px;gap:10px;align-items:center;font-variant-numeric:tabular-nums;font-size:14px}
 .trow b{font-family:var(--display);font-size:17px} .trow span:last-child{text-align:right;color:var(--muted)}
+.gtot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;padding:9px 12px;background:var(--sunk);border:1px solid var(--line);border-top:0;border-radius:0 0 10px 10px;font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums}
+.gtot b{color:var(--ink);font-family:var(--display);font-size:17px}
+.grp ul:has(+ .gtot){border-radius:10px 10px 0 0}
 .gmsg{border-radius:8px;padding:10px 12px;font-size:14px;font-weight:600}
 .gmsg.ok{background:var(--ok-bg);color:var(--ok)} .gmsg.bad{background:var(--warn-bg);color:var(--warn)} .gmsg.wait{background:var(--wait-bg);color:var(--wait)}
 .pendbar{background:var(--warn-bg);color:var(--warn);border-bottom:1px solid var(--warn);padding:10px 16px;font-size:14px;font-weight:600;text-align:center}
@@ -305,8 +308,18 @@ function rowPedido(it){var s=stockOf(it.c),p=pedidoDe(it),b=idealPrevio(it.c),sg
   if(aj!==null&&sg!==null&&aj!==sg&&it.sc!==false)m+='<button type="button" class="link" data-a="reset">volver a '+sg+'</button>';
   return '<li class="row'+(p===0?" zero":"")+'" data-c="'+it.c+'"><div class="info"><span class="nm">'+esc(it.n)+'</span><span class="meta"><span>'+it.c+'</span>'+m+'</span></div>'+stepper("p",it.c,p,"0","Cajas a pedir de "+esc(it.n))+'</li>'}
 function match(it){if(S.rubro&&it.r!==S.rubro)return false;if(S.q){var q=S.q.toLowerCase();if(it.n.toLowerCase().indexOf(q)<0&&String(it.c).indexOf(q)<0)return false}return true}
-function groups(list,rowFn,extra){var h="";rubros().forEach(function(r){var l=list.filter(function(i){return i.r===r});if(!l.length)return;
-  h+='<section class="grp"><h3><span>'+esc(r)+'</span>'+(extra?extra(r,l):"")+'</h3><ul>'+l.map(rowFn).join("")+'</ul></section>'});return h}
+function groups(list,rowFn,extra,mode){var h="";rubros().forEach(function(r){var l=list.filter(function(i){return i.r===r});if(!l.length)return;
+  h+='<section class="grp"><h3><span>'+esc(r)+'</span>'+(extra?extra(r,l):"")+'</h3><ul>'+l.map(rowFn).join("")+'</ul>'+(mode?'<div class="gtot" data-gm="'+mode+'" data-gr="'+esc(r)+'">'+gtot(mode,r)+'</div>':"")+'</section>'});return h}
+/* Subtotal de cada familia (sobre la familia entera, no solo lo filtrado) */
+function gtot(mode,r){var nm=r.toLowerCase().replace(/^./,function(c){return c.toUpperCase()});
+  if(mode==="conteo"){var l=activos().filter(function(i){return i.r===r&&i.sc!==false}),t=0,n=0;l.forEach(function(i){var s=stockOf(i.c);if(s!==null){t+=s;n++}});
+    return '<span>'+esc(nm)+'</span><span><b>'+cj(t)+'</b> en cámara'+(n<l.length?' · faltan contar '+(l.length-n):"")+'</span>'}
+  if(mode==="pedido"){var lp=activos().filter(function(i){return i.r===r}),p=0,q=0;lp.forEach(function(i){var x=pedidoDe(i),s=stockOf(i.c);p+=x;q+=(s||0)+x});
+    return '<span>'+esc(nm)+'</span><span><b>'+cj(p)+'</b> a pedir · queda en '+cj(q)+'</span>'}
+  if(mode==="fz"){var lf=fzProd(S.area).filter(function(i){return i.r===r}),u=0,m=0;lf.forEach(function(i){var s=fzStock(S.area,i.c);if(s!==null){u+=s;m++}});
+    return '<span>'+esc(nm)+'</span><span><b>'+u+(u===1?" unidad":" unidades")+'</b>'+(m<lf.length?' · faltan contar '+(lf.length-m):"")+'</span>'}
+  return ""}
+function gtotRefresh(){view.querySelectorAll(".gtot").forEach(function(el){el.innerHTML=gtot(el.dataset.gm,el.dataset.gr)})}
 function chipsHTML(list,counter){var h='<button type="button" class="chip" data-rubro="" aria-pressed="'+(S.rubro===""?"true":"false")+'">Todos</button>';
   rubros().forEach(function(r){var l=list.filter(function(i){return i.r===r});if(!l.length)return;
     h+='<button type="button" class="chip" data-rubro="'+esc(r)+'" aria-pressed="'+(S.rubro===r?"true":"false")+'">'+esc(r.toLowerCase().replace(/^./,function(c){return c.toUpperCase()}))+' <small>'+counter(l)+'</small></button>'});return h}
@@ -325,7 +338,7 @@ function vConteo(){var a=abierto();if(!a)return sinAbierto();
   return '<div class="head"><h2>Conteo del '+fmt(a.fecha)+'</h2><p id="prog-t">'+hechos+" de "+cont.length+' productos contados</p></div><div class="prog"><i id="prog-b" style="width:'+(cont.length?hechos/cont.length*100:0)+'%"></i></div>'+gi+gm+
   (S.limpiar?'<div class="confirm"><span>Se borran las '+hechos+' cantidades cargadas y el conteo arranca de nuevo. Antes se guarda una copia en Historial → Conteos guardados.</span><button type="button" class="btn" data-a="limpiar-no">Cancelar</button><button type="button" class="btn pri" data-a="limpiar-si">Limpiar</button></div>'
    :'<div><button type="button" class="btn danger" data-a="limpiar"'+(S.readOnly?" disabled":"")+'>Limpiar conteo</button></div>')+
-  tools(cont,cnt)+(list.length?groups(list,rowConteo,function(r,l){return l.some(function(i){return stockOf(i.c)===null})?'<button type="button" class="link" data-a="ceros" data-r="'+esc(r)+'">Poner en 0 los que faltan</button>':""}):'<div class="empty"><p>Ningún producto coincide con la búsqueda.</p></div>')}
+  tools(cont,cnt)+(list.length?groups(list,rowConteo,function(r,l){return l.some(function(i){return stockOf(i.c)===null})?'<button type="button" class="link" data-a="ceros" data-r="'+esc(r)+'">Poner en 0 los que faltan</button>':""},"conteo"):'<div class="empty"><p>Ningún producto coincide con la búsqueda.</p></div>')}
 function vPedido(){var a=abierto();if(!a)return sinAbierto();
   var act=activos(),cnt=function(l){var t=0;l.forEach(function(i){t+=pedidoDe(i)});return t};
   var f=[["todos","Todos"],["pedir","A pedir"],["agotados","Agotados"],["falta","Sin contar"]];
@@ -333,7 +346,7 @@ function vPedido(){var a=abierto();if(!a)return sinAbierto();
     return S.filtro==="pedir"?pedidoDe(i)>0:S.filtro==="agotados"?s===0:S.filtro==="falta"?(i.sc!==false&&s===null):true});
   return '<div class="head"><h2>Pedido del '+fmt(a.fecha)+'</h2><p>Sugerido = ideal anterior − stock. Ajustá lo que haga falta.</p><p class="meta">'+(a.guardado&&a.guardado.at?'Conteo guardado por el local: '+hhmm(a.guardado.at)+' · '+a.guardado.n+' productos':'El conteo todavía no se guardó desde el local.')+'</p></div>'+
   '<div class="chips">'+f.map(function(x){return '<button type="button" class="chip" data-filtro="'+x[0]+'" aria-pressed="'+(S.filtro===x[0]?"true":"false")+'">'+x[1]+'</button>'}).join("")+'</div>'+
-  tools(act,cnt)+(list.length?groups(list,rowPedido):'<div class="empty"><p>No hay productos en este filtro.</p></div>')}
+  tools(act,cnt)+(list.length?groups(list,rowPedido,null,"pedido"):'<div class="empty"><p>No hay productos en este filtro.</p></div>')}
 function barPedido(){if(S.area!=="camara"){barFz();return}var a=abierto();
   if(S.tab==="conteo"&&a){var cont=activos().filter(function(i){return i.sc!==false}),h=cont.filter(function(i){return stockOf(i.c)!==null}).length;
     bar.innerHTML='<div class="wrap"><div class="tot"><b>'+h+' de '+cont.length+'</b><span>productos contados</span></div><div class="acts"><button type="button" class="btn pri" data-a="guardar"'+(S.readOnly?" disabled":"")+'>Guardar conteo</button></div></div>';bar.hidden=false;return}
@@ -409,7 +422,7 @@ function rerow(c,force){var li=view.querySelector('li.row[data-c="'+c+'"]');if(!
   var it=items().filter(function(i){return i.c===c})[0];if(!it)return;var foc=document.activeElement&&li.contains(document.activeElement)?document.activeElement.getAttribute("data-a"):null;
   li.outerHTML=S.tab==="conteo"?rowConteo(it):rowPedido(it);
   if(foc){var b=view.querySelector('li.row[data-c="'+c+'"] [data-a="'+foc+'"]');if(b)b.focus()}}
-function refresh(){if(S.tab==="conteo"&&abierto()){var cont=activos().filter(function(i){return i.sc!==false}),h=cont.filter(function(i){return stockOf(i.c)!==null}).length;
+function refresh(){gtotRefresh();if(S.tab==="conteo"&&abierto()){var cont=activos().filter(function(i){return i.sc!==false}),h=cont.filter(function(i){return stockOf(i.c)!==null}).length;
     var pt=$("prog-t"),pb=$("prog-b");if(pt){pt.textContent=h+" de "+cont.length+" productos contados";pb.style.width=(cont.length?h/cont.length*100:0)+"%"}
     var ch=$("chips");if(ch){var sl=ch.scrollLeft;ch.innerHTML=chipsHTML(cont,function(l){return l.filter(function(i){return stockOf(i.c)!==null}).length+"/"+l.length});ch.scrollLeft=sl}}
   barPedido()}
@@ -484,7 +497,7 @@ function camFuente(){var a=abierto();if(a&&activos().some(function(i){return sto
   var p=previo();if(!p||!p.stock||!Object.keys(p.stock).length)return null;return {fecha:p.fecha,curso:false,get:function(c){return num(p.stock[c])}}}
 function rowFz(l,it){var s=fzStock(l,it.c);return '<li class="row'+(s!==null?" done":"")+'" data-c="'+it.c+'"><div class="info"><span class="nm">'+esc(it.n)+'</span><span class="meta"><span>'+it.c+'</span>'+(s===0?'<span class="tag out">Sin stock</span>':"")+'</span></div>'+
   '<div class="step"><button type="button" data-a="f-" aria-label="Restar una unidad">−</button><input id="f'+it.c+'" type="text" inputmode="numeric" autocomplete="off" value="'+(s===null?"":s)+'" placeholder="–" aria-label="Unidades de '+esc(it.n)+'"><button type="button" data-a="f+" aria-label="Sumar una unidad">+</button></div></li>'}
-function fzGroups(list,rowFn,extra){var h="";fzRubros(list).forEach(function(r){var l=list.filter(function(i){return i.r===r});h+='<section class="grp"><h3><span>'+esc(r)+'</span>'+(extra?extra(r,l):"")+'</h3><ul>'+l.map(rowFn).join("")+'</ul></section>'});return h}
+function fzGroups(list,rowFn,extra,mode){var h="";fzRubros(list).forEach(function(r){var l=list.filter(function(i){return i.r===r});h+='<section class="grp"><h3><span>'+esc(r)+'</span>'+(extra?extra(r,l):"")+'</h3><ul>'+l.map(rowFn).join("")+'</ul>'+(mode?'<div class="gtot" data-gm="'+mode+'" data-gr="'+esc(r)+'">'+gtot(mode,r)+'</div>':"")+'</section>'});return h}
 function fzMatch(it,q){if(!q)return true;q=q.toLowerCase();return it.n.toLowerCase().indexOf(q)>=0||String(it.c).indexOf(q)>=0}
 function vFzConteo(l){var ps=fzProd(l),a=fzAbierto(l),cs=fzCerrados(l),u=cs[cs.length-1];
   if(!a){var t=u?sum(u.stock):null;return '<div class="empty"><div class="head"><h2>Freezers de '+FZN[l]+'</h2></div><p>'+(u?"Último conteo: "+fmt(u.fecha)+", "+t.t+" unidades.":"Todavía no se contaron los freezers de este local.")+' Acá se cuentan unidades sueltas (bolsas), no cajas.</p><button type="button" class="btn pri" data-a="fz-nuevo"'+(S.readOnly?" disabled":"")+'>Empezar el conteo de hoy</button></div>'}
@@ -494,7 +507,7 @@ function vFzConteo(l){var ps=fzProd(l),a=fzAbierto(l),cs=fzCerrados(l),u=cs[cs.l
   (S.flimpiar?'<div class="confirm"><span>Se borran las '+h+' cantidades cargadas en '+FZN[l]+' y el conteo arranca de nuevo.</span><button type="button" class="btn" data-a="fz-limpiar-no">Cancelar</button><button type="button" class="btn pri" data-a="fz-limpiar-si">Limpiar</button></div>'
    :'<div><button type="button" class="btn danger" data-a="fz-limpiar"'+(S.readOnly?" disabled":"")+'>Limpiar conteo</button></div>')+
   '<div class="tools"><input id="fbuscar" type="search" placeholder="Buscar producto o código" value="'+esc(S.fq)+'" aria-label="Buscar producto"></div><div class="chips" id="fchips">'+chipsHTML(ps,cnt)+'</div>'+
-  (list.length?fzGroups(list,function(it){return rowFz(l,it)},function(r,x){return x.some(function(i){return fzStock(l,i.c)===null})?'<button type="button" class="link" data-a="fz-ceros" data-r="'+esc(r)+'">Poner en 0 los que faltan</button>':""}):'<div class="empty"><p>Ningún producto coincide con la búsqueda.</p></div>')}
+  (list.length?fzGroups(list,function(it){return rowFz(l,it)},function(r,x){return x.some(function(i){return fzStock(l,i.c)===null})?'<button type="button" class="link" data-a="fz-ceros" data-r="'+esc(r)+'">Poner en 0 los que faltan</button>':""},"fz"):'<div class="empty"><p>Ningún producto coincide con la búsqueda.</p></div>')}
 function barFz(){var l=S.area,a=(l==="carcano"||l==="sanmartin")?fzAbierto(l):null;if(!a||S.ftab!=="conteo"){bar.hidden=true;return}
   var ps=fzProd(l),t=0,n=0;ps.forEach(function(i){var s=fzStock(l,i.c);if(s!==null){n++;t+=s}});
   var h='<div class="wrap"><div class="tot"><b>'+t+(t===1?" unidad":" unidades")+'</b><span>'+n+" de "+ps.length+' productos contados</span></div><div class="acts"><button type="button" class="btn pri" data-a="fz-cerrar"'+(S.readOnly?" disabled":"")+'>Terminar conteo</button></div>';
@@ -516,7 +529,7 @@ function vFz(l){return S.ftab==="historial"?vFzHist(l):S.ftab==="productos"?vFzP
 function fzRerow(c,force){var li=view.querySelector('li.row[data-c="'+c+'"]');if(!li||S.ftab!=="conteo")return;if(!force&&li.contains(document.activeElement)&&document.activeElement.tagName==="INPUT")return;
   var it=fzProd(S.area).filter(function(i){return i.c===c})[0];if(!it)return;var foc=document.activeElement&&li.contains(document.activeElement)?document.activeElement.getAttribute("data-a"):null;
   li.outerHTML=rowFz(S.area,it);if(foc){var b=view.querySelector('li.row[data-c="'+c+'"] [data-a="'+foc+'"]');if(b)b.focus()}}
-function fzRefresh(){var l=S.area,ps=fzProd(l),h=ps.filter(function(i){return fzStock(l,i.c)!==null}).length,pt=$("fprog-t"),pb=$("fprog-b");if(pt){pt.textContent=h+" de "+ps.length+" productos contados";pb.style.width=(ps.length?h/ps.length*100:0)+"%"}
+function fzRefresh(){gtotRefresh();var l=S.area,ps=fzProd(l),h=ps.filter(function(i){return fzStock(l,i.c)!==null}).length,pt=$("fprog-t"),pb=$("fprog-b");if(pt){pt.textContent=h+" de "+ps.length+" productos contados";pb.style.width=(ps.length?h/ps.length*100:0)+"%"}
   var ch=$("fchips");if(ch){var sl=ch.scrollLeft;ch.innerHTML=chipsHTML(ps,function(x){return x.filter(function(i){return fzStock(l,i.c)!==null}).length+"/"+x.length});ch.scrollLeft=sl}barFz()}
 function fzSoft(){if(S.area==="total"){render();return}if(S.ftab==="conteo"&&fzAbierto(S.area)&&view.querySelector("li.row")){view.querySelectorAll("li.row").forEach(function(li){fzRerow(+li.dataset.c,false)});fzRefresh()}else render()}
 function fzGuardarItems(l,next){var clean=JSON.parse(JSON.stringify(next));fzCfg[l]={items:clean};render();write(function(){return DB.doc("config/fz_"+l).set({items:clean})})}
