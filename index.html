@@ -151,6 +151,9 @@ tr.sec td{font-family:var(--display);font-weight:600;letter-spacing:.05em;text-t
 .card h3{font-family:var(--display);font-weight:600;font-size:17px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 2px}
 .trow{display:grid;grid-template-columns:52px 1fr 92px;gap:10px;align-items:center;font-variant-numeric:tabular-nums;font-size:14px}
 .trow b{font-family:var(--display);font-size:17px} .trow span:last-child{text-align:right;color:var(--muted)}
+.gmsg{border-radius:8px;padding:10px 12px;font-size:14px;font-weight:600}
+.gmsg.ok{background:var(--ok-bg);color:var(--ok)} .gmsg.bad{background:var(--warn-bg);color:var(--warn)} .gmsg.wait{background:var(--wait-bg);color:var(--wait)}
+.pendbar{background:var(--warn-bg);color:var(--warn);border-bottom:1px solid var(--warn);padding:10px 16px;font-size:14px;font-weight:600;text-align:center}
 #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(150px + env(safe-area-inset-bottom,0px));z-index:10;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;font-size:14px;max-width:90%}
 @media (max-width:460px){ .areas button{font-size:14px;letter-spacing:0} .src{gap:6px} .src b{font-size:20px}  .step button{width:40px} .step input{width:48px} .tabs{gap:0} .tabs button{font-size:15px;letter-spacing:0;padding-inline:0} }
 </style>
@@ -162,7 +165,7 @@ window.CAM_SEED={"cam_config/catalogo":{"items":[{"a":true,"c":3001,"kg":9.6,"n"
 </script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, collection, onSnapshot, setDoc, updateDoc, FieldPath, getDocFromServer, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, collection, onSnapshot, setDoc, updateDoc, FieldPath, getDocFromServer, writeBatch, waitForPendingWrites } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 const app = initializeApp({
   apiKey: "AIzaSyC5voDKO_imN8QqRRpjMQdwV7QILrJw40g",
   authDomain: "frioteka-preventista.firebaseapp.com",
@@ -177,15 +180,22 @@ catch (e) { db = getFirestore(app); }
 // Colecciones propias de esta app (cam_*): no tocan las de preventistas ni las de proveedores
 const map = p => "cam_" + p;
 const wrapDoc = s => ({ id: s.id, exists: s.exists(), data: () => s.data() });
+// Estado de sincronización: ¿hay cambios que todavía no llegaron a la nube?
+const SYNC = {}; let lastSync = null, seq = 0;
+const syncState = () => { const v = Object.values(SYNC); return { pending: v.some(x => x.p), cache: v.some(x => x.c), last: lastSync }; };
+const mark = (k, md) => { const before = JSON.stringify(syncState()); SYNC[k] = { p: md.hasPendingWrites, c: md.fromCache };
+  const st = syncState(); if (!st.pending && !st.cache) lastSync = new Date(); window.CAM_SYNC = syncState();
+  if (JSON.stringify(window.CAM_SYNC) !== before) window.dispatchEvent(new CustomEvent("cam-sync", { detail: window.CAM_SYNC })); };
 const flat = (o, pre, out) => { for (const k in o) { const v = o[k], p = pre.concat(k); if (v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length) flat(v, p, out); else out.push(new FieldPath(...p), v); } return out; };
 window.CAMDB = {
+  waitSynced(ms) { return Promise.race([waitForPendingWrites(db).then(() => true), new Promise(r => setTimeout(() => r(false), ms || 15000))]); },
   doc(path) { const ref = doc(db, map(path)); return {
     set: d => setDoc(ref, d),
     update: d => { const a = flat(d, [], []); return a.length ? updateDoc(ref, ...a) : Promise.resolve(); },
-    onSnapshot: (n, e) => onSnapshot(ref, s => n(wrapDoc(s)), e)
+    onSnapshot: (n, e) => { const k = "d" + (++seq); let last; return onSnapshot(ref, { includeMetadataChanges: true }, s => { mark(k, s.metadata); const j = JSON.stringify(s.exists() ? s.data() : null); if (j === last) return; last = j; n(wrapDoc(s)); }, e); }
   }; },
   collection(path) { const ref = collection(db, map(path)); return {
-    onSnapshot: (n, e) => onSnapshot(ref, q => n({ docs: q.docs.map(wrapDoc) }), e)
+    onSnapshot: (n, e) => { const k = "q" + (++seq); let first = true; return onSnapshot(ref, { includeMetadataChanges: true }, q => { mark(k, q.metadata); if (!first && !q.docChanges().length) return; first = false; n({ docs: q.docs.map(wrapDoc) }); }, e); }
   }; }
 };
 window.dispatchEvent(new Event("cam-ready"));
@@ -209,7 +219,7 @@ window.dispatchEvent(new Event("cam-ready"));
   </nav>
   <nav class="tabs" role="tablist" id="tabs">
   </nav>
-</div></header>
+</div><div class="pendbar" id="pendbar" role="status" hidden></div></header>
 <main class="wrap" id="view"><div class="empty"><p>Cargando productos y último pedido…</p></div></main>
 <div class="bar" id="bar" hidden></div>
 <div class="sheet" id="sheet" hidden></div>
@@ -222,8 +232,8 @@ window.dispatchEvent(new Event("cam-ready"));
 "use strict";
 var $=function(id){return document.getElementById(id)};
 var view=$("view"), bar=$("bar"), sheet=$("sheet");
-var S={area:"camara",ftab:"conteo",fq:"",fhist:null,fconfirm:false,tq:"",tall:false,tab:"conteo",rubro:"",q:"",filtro:"todos",hv:"pedidos",tend:"todos",ide:null,hist:null,edit:null,confirm:false,limpiar:false,adding:false,readOnly:false};
-var DB=null, DL=null, cat=null, pedidos=[], loaded={cat:false,ped:false};
+var S={gmsg:null,hcg:null,cgRec:null,area:"camara",ftab:"conteo",fq:"",fhist:null,fconfirm:false,tq:"",tall:false,tab:"conteo",rubro:"",q:"",filtro:"todos",hv:"pedidos",tend:"todos",ide:null,hist:null,edit:null,confirm:false,limpiar:false,adding:false,readOnly:false};
+var DB=null, DL=null, cat=null, pedidos=[], guardados=[], loaded={cat:false,ped:false};
 var ov={stock:{},ajuste:{}}, pend={stock:{},ajuste:{}}, chain=Promise.resolve(), timer=null, saving=0;
 try{var t=localStorage.getItem("tab"); if(t) S.tab=t; var ar=localStorage.getItem("area"); if(ar) S.area=ar; var ft=localStorage.getItem("ftab"); if(ft==="conteo"||ft==="historial") S.ftab=ft;}catch(e){}
 
@@ -256,7 +266,13 @@ function sum(o){var t=0,n=0;for(var k in (o||{})){var v=num(o[k]);if(v){t+=v;n++
 function setSync(){var el=$("sync");if(!DB){el.textContent="Sin conexión a los datos";return}
   if(S.readOnly){el.textContent="Solo lectura";return}
   if(navigator.onLine===false){el.textContent="Sin señal · se guarda en el teléfono";return}
-  el.textContent=(saving||timer||fzTimer)?"Guardando…":"Guardado"}
+  var sy=window.CAM_SYNC||{},pb=$("pendbar");
+  if(pb){pb.hidden=!sy.pending;pb.textContent=navigator.onLine===false||sy.cache?"Sin señal: hay cambios guardados solo en este teléfono. No cierres la app; se suben solos cuando vuelva internet.":"Subiendo cambios a la nube… no cierres la app todavía."}
+  if(sy.pending){el.textContent="Sin subir";return}
+  if(timer||fzTimer||saving){el.textContent="Guardando…";return}
+  el.textContent=sy.last?"Guardado en la nube "+String(sy.last.getHours()).padStart(2,"0")+":"+String(sy.last.getMinutes()).padStart(2,"0"):"Guardado"}
+window.addEventListener("cam-sync",function(){setSync()});
+window.addEventListener("beforeunload",function(e){var sy=window.CAM_SYNC||{};if(sy.pending||timer||fzTimer){e.preventDefault();e.returnValue=""}});
 window.addEventListener("online",function(){setSync()});window.addEventListener("offline",function(){setSync()});
 function toast(m){var t=$("toast");t.textContent=m;t.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(function(){t.hidden=true},3200)}
 function fail(e){saving=Math.max(0,saving-1);
@@ -304,8 +320,10 @@ function vConteo(){var a=abierto();if(!a)return sinAbierto();
   var cont=activos().filter(function(i){return i.sc!==false}),hechos=cont.filter(function(i){return stockOf(i.c)!==null}).length;
   var cnt=function(l){return l.filter(function(i){return stockOf(i.c)!==null}).length+"/"+l.length};
   var list=cont.filter(match);
-  return '<div class="head"><h2>Conteo del '+fmt(a.fecha)+'</h2><p id="prog-t">'+hechos+" de "+cont.length+' productos contados</p></div><div class="prog"><i id="prog-b" style="width:'+(cont.length?hechos/cont.length*100:0)+'%"></i></div>'+
-  (S.limpiar?'<div class="confirm"><span>Se borran las '+hechos+' cantidades cargadas y el conteo arranca de nuevo.</span><button type="button" class="btn" data-a="limpiar-no">Cancelar</button><button type="button" class="btn pri" data-a="limpiar-si">Limpiar</button></div>'
+  var gi=a.guardado&&a.guardado.at?'<p class="meta">Último guardado: '+hhmm(a.guardado.at)+' · '+a.guardado.n+' productos</p>':'<p class="meta">Todavía no se guardó este conteo.</p>';
+  var gm=S.gmsg?'<div class="gmsg '+S.gmsg.k+'" role="status">'+esc(S.gmsg.t)+'</div>':"";
+  return '<div class="head"><h2>Conteo del '+fmt(a.fecha)+'</h2><p id="prog-t">'+hechos+" de "+cont.length+' productos contados</p></div><div class="prog"><i id="prog-b" style="width:'+(cont.length?hechos/cont.length*100:0)+'%"></i></div>'+gi+gm+
+  (S.limpiar?'<div class="confirm"><span>Se borran las '+hechos+' cantidades cargadas y el conteo arranca de nuevo. Antes se guarda una copia en Historial → Conteos guardados.</span><button type="button" class="btn" data-a="limpiar-no">Cancelar</button><button type="button" class="btn pri" data-a="limpiar-si">Limpiar</button></div>'
    :'<div><button type="button" class="btn danger" data-a="limpiar"'+(S.readOnly?" disabled":"")+'>Limpiar conteo</button></div>')+
   tools(cont,cnt)+(list.length?groups(list,rowConteo,function(r,l){return l.some(function(i){return stockOf(i.c)===null})?'<button type="button" class="link" data-a="ceros" data-r="'+esc(r)+'">Poner en 0 los que faltan</button>':""}):'<div class="empty"><p>Ningún producto coincide con la búsqueda.</p></div>')}
 function vPedido(){var a=abierto();if(!a)return sinAbierto();
@@ -313,10 +331,13 @@ function vPedido(){var a=abierto();if(!a)return sinAbierto();
   var f=[["todos","Todos"],["pedir","A pedir"],["agotados","Agotados"],["falta","Sin contar"]];
   var list=act.filter(match).filter(function(i){var s=stockOf(i.c);
     return S.filtro==="pedir"?pedidoDe(i)>0:S.filtro==="agotados"?s===0:S.filtro==="falta"?(i.sc!==false&&s===null):true});
-  return '<div class="head"><h2>Pedido del '+fmt(a.fecha)+'</h2><p>Sugerido = ideal anterior − stock. Ajustá lo que haga falta.</p></div>'+
+  return '<div class="head"><h2>Pedido del '+fmt(a.fecha)+'</h2><p>Sugerido = ideal anterior − stock. Ajustá lo que haga falta.</p><p class="meta">'+(a.guardado&&a.guardado.at?'Conteo guardado por el local: '+hhmm(a.guardado.at)+' · '+a.guardado.n+' productos':'El conteo todavía no se guardó desde el local.')+'</p></div>'+
   '<div class="chips">'+f.map(function(x){return '<button type="button" class="chip" data-filtro="'+x[0]+'" aria-pressed="'+(S.filtro===x[0]?"true":"false")+'">'+x[1]+'</button>'}).join("")+'</div>'+
   tools(act,cnt)+(list.length?groups(list,rowPedido):'<div class="empty"><p>No hay productos en este filtro.</p></div>')}
-function barPedido(){if(S.area!=="camara"){barFz();return}var a=abierto();if(S.tab!=="pedido"||!a){bar.hidden=true;return}
+function barPedido(){if(S.area!=="camara"){barFz();return}var a=abierto();
+  if(S.tab==="conteo"&&a){var cont=activos().filter(function(i){return i.sc!==false}),h=cont.filter(function(i){return stockOf(i.c)!==null}).length;
+    bar.innerHTML='<div class="wrap"><div class="tot"><b>'+h+' de '+cont.length+'</b><span>productos contados</span></div><div class="acts"><button type="button" class="btn pri" data-a="guardar"'+(S.readOnly?" disabled":"")+'>Guardar conteo</button></div></div>';bar.hidden=false;return}
+  if(S.tab!=="pedido"||!a){bar.hidden=true;return}
   var t=totales(),kg=kilos(mapaActual()),h='<div class="wrap"><div class="tot"><b>'+cj(t.t)+'</b><span>'+t.n+" productos · "+fk(kg.k)+(kg.sin?" + "+kg.sin+" sin peso":"")+(t.falta?" · faltan contar "+t.falta:"")+'</span></div><div class="acts">'+
   '<button type="button" class="btn" data-a="wsp">WhatsApp</button>'+(DL&&window.XLSX?'<button type="button" class="btn" data-a="xls">Excel</button>':"")+(DL&&window.jspdf?'<button type="button" class="btn" data-a="pdf">PDF</button>':"")+
   '<button type="button" class="btn pri" data-a="cerrar"'+(S.readOnly?" disabled":"")+'>Cerrar pedido</button></div>';
@@ -358,8 +379,13 @@ function vHistIdeal(){var e=enviados().filter(function(p){return Object.keys(p.s
     if(S.ide===it.c)r+='<li class="edit"><div class="tbl"><table><thead><tr><th>Fecha</th><th class="num">Stock</th><th class="num">Pedido</th><th class="num">Ideal</th></tr></thead><tbody>'+
       sr.slice().reverse().map(function(q){return '<tr><td>'+fmt(q.f)+'</td><td class="num">'+q.s+'</td><td class="num">'+q.p+'</td><td class="num"><b>'+q.i+'</b></td></tr>'}).join("")+'</tbody></table></div></li>';
     return r})}
-function vHistorial(){var f=[["pedidos","Pedidos"],["ideal","Evolución del ideal"]];
-  return '<div class="chips">'+f.map(function(x){return '<button type="button" class="chip" data-hv="'+x[0]+'" aria-pressed="'+(S.hv===x[0]?"true":"false")+'">'+x[1]+'</button>'}).join("")+'</div>'+(S.hv==="ideal"?vHistIdeal():vHistPedidos())}
+function vHistCg(){if(!guardados.length)return '<div class="empty"><p>Cada vez que se toca "Guardar conteo" (o "Limpiar conteo") queda una copia acá, con fecha y hora.</p></div>';var by=catBy(),a=abierto();
+  return '<div class="head"><h2>Conteos guardados</h2><p>'+guardados.length+' copias · tocá una para ver el detalle</p></div>'+guardados.map(function(g){var t=sum(g.stock),op=S.hcg===g.id;
+    return '<section class="hist"><button type="button" data-hcg="'+esc(g.id)+'" aria-expanded="'+op+'"><span class="d">'+hhmm(g.at)+'</span><span></span><span class="n"><b>'+t.n+'</b> prod. · '+t.t+' cj</span></button>'+
+    (op?'<div class="hbody">'+(a&&!S.readOnly?(S.cgRec===g.id?'<div class="confirm"><span>Las cantidades del conteo abierto se reemplazan por las de esta copia.</span><button type="button" class="btn" data-a="cg-no">Cancelar</button><button type="button" class="btn pri" data-a="cg-si" data-id="'+esc(g.id)+'">Recuperar</button></div>':'<div class="acts"><button type="button" class="btn" data-a="cg-rec" data-id="'+esc(g.id)+'">Recuperar en el conteo abierto</button></div>'):"")+
+    '<div class="tbl"><table><thead><tr><th>Código</th><th>Producto</th><th class="num">Cajas</th></tr></thead><tbody>'+Object.keys(g.stock).sort(function(x,y){return x-y}).map(function(c){var i=by[c];return '<tr><td>'+c+'</td><td>'+esc(i?i.n:c)+'</td><td class="num"><b>'+g.stock[c]+'</b></td></tr>'}).join("")+'</tbody></table></div></div>':"")+'</section>'}).join("")}
+function vHistorial(){var f=[["pedidos","Pedidos"],["ideal","Evolución del ideal"],["cg","Conteos guardados"]];
+  return '<div class="chips">'+f.map(function(x){return '<button type="button" class="chip" data-hv="'+x[0]+'" aria-pressed="'+(S.hv===x[0]?"true":"false")+'">'+x[1]+'</button>'}).join("")+'</div>'+(S.hv==="ideal"?vHistIdeal():S.hv==="cg"?vHistCg():vHistPedidos())}
 function selRubro(id,v){return '<select id="'+id+'" aria-label="Rubro">'+rubros().map(function(r){return '<option'+(r===v?" selected":"")+'>'+esc(r)+'</option>'}).join("")+'</select>'}
 function vProductos(){var list=items().filter(match),h='<div class="head"><h2>Productos</h2><p>'+activos().length+" activos de "+items().length+'</p></div>';
   h+=S.adding?'<div class="empty"><div class="form"><input id="n-cod" type="text" inputmode="numeric" placeholder="Código" style="width:110px" aria-label="Código"><input id="n-nom" class="grow" type="text" placeholder="Nombre del producto" aria-label="Nombre">'+selRubro("n-rub",S.rubro)+
@@ -418,9 +444,18 @@ function pdf(id){var src=fuente(id),d=new window.jspdf.jsPDF({unit:"mm",format:"
   d.setFont("helvetica","bold");d.setFontSize(12);d.text("TOTAL",M,y+4);d.text(String(t),W-M,y+4,{align:"right"});var kg=kilos(src.pedido);d.setFont("helvetica","normal");d.setFontSize(10);d.text("Peso aproximado: "+fk(kg.k)+(kg.sin?" (+ "+kg.sin+" bultos sin peso cargado)":""),M,y+10);
   var n=d.getNumberOfPages();for(var k=1;k<=n;k++){d.setPage(k);d.setFont("helvetica","normal");d.setFontSize(8);d.setTextColor(120);d.text("Página "+k+" de "+n,W-M,290,{align:"right"})}
   DL.save({filename:"Pedido_FRIOTEKA_"+src.fecha+".pdf",data:d.output("arraybuffer")}).then(function(){toast("PDF guardado")},function(e){if(!e||e.code!=="declined")toast("No se pudo descargar el PDF desde acá.")})}
-function limpiar(){var a=abierto();if(!a)return;clearTimeout(timer);timer=null;var aj={};activos().forEach(function(i){var v=ajusteOf(i.c);if(v!==null)aj[i.c]=v});
+function hhmm(iso){var d=new Date(iso);return isNaN(d)?"":fmtC(d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"))+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")}
+function snapshotConteo(a,st,why){var now=new Date().toISOString(),id=now.replace(/[^0-9]/g,"").slice(0,14);var n=Object.keys(st).length;
+  write(function(){return DB.doc("conteos_guardados/"+id).set({fecha:a.fecha,at:now,pedido:a.id,stock:st,motivo:why||"guardado"})});
+  write(function(){return DB.doc("pedidos/"+a.id).update({guardado_at:now,guardado_n:n})});return n}
+function guardarConteo(){var a=abierto();if(!a||S.readOnly)return;flush();var st=stockActual(),n=Object.keys(st).length;
+  if(!n){toast("Todavía no hay cantidades cargadas.");return}
+  snapshotConteo(a,st,"guardado");S.gmsg={k:"wait",t:"Subiendo el conteo a la nube…"};render();
+  var w=DB.waitSynced?DB.waitSynced(15000):Promise.resolve(true);
+  w.then(function(ok){S.gmsg=ok?{k:"ok",t:"Conteo guardado en la nube ("+n+" productos). Ya se puede ver desde cualquier lugar."}:{k:"bad",t:"Quedó guardado en este teléfono pero todavía no se subió: no hay señal. Salí de la cámara, no cierres la app y tocá Guardar de nuevo."};render()})}
+function limpiar(){var a=abierto();if(!a)return;var stPrev=stockActual();if(Object.keys(stPrev).length)snapshotConteo(a,stPrev,"antes de limpiar");clearTimeout(timer);timer=null;var aj={};activos().forEach(function(i){var v=ajusteOf(i.c);if(v!==null)aj[i.c]=v});
   pend={stock:{},ajuste:{}};ov={stock:{},ajuste:{}};a.stock={};a.ajuste=aj;S.limpiar=false;render();
-  write(function(){return DB.doc("pedidos/"+a.id).set({fecha:a.fecha,estado:"abierto",stock:{},ajuste:aj})}).then(function(ok){if(ok)toast("Conteo limpio. Podés empezar de nuevo.")})}
+  write(function(){return DB.doc("pedidos/"+a.id).set({fecha:a.fecha,estado:"abierto",stock:{},ajuste:aj,guardado_at:null,guardado_n:0})}).then(function(ok){if(ok)toast("Conteo limpio. Podés empezar de nuevo.")})}
 function nuevo(){var id=hoy(),n=1;while(pedidos.some(function(p){return p.id===id})){n++;id=hoy()+"-"+n}
   ov={stock:{},ajuste:{}};pend={stock:{},ajuste:{}};write(function(){return DB.doc("pedidos/"+id).set({fecha:hoy(),estado:"abierto",stock:{},ajuste:{}})})}
 function cerrar(){var a=abierto();if(!a)return;var doc={fecha:a.fecha,estado:"enviado",stock:stockActual(),pedido:mapaActual(),cerrado:new Date().toISOString()};
@@ -534,9 +569,10 @@ function excelTotal(){var T=totalRows(),rows=[["Código","Producto","Rubro","Cá
 
 /* ---------- eventos ---------- */
 $("areas").addEventListener("click",function(e){var b=e.target.closest("button[data-area]");if(!b)return;flush();fzFlush();S.area=b.dataset.area;S.q="";S.fq="";S.rubro="";S.confirm=false;S.fconfirm=false;S.limpiar=false;S.flimpiar=false;try{localStorage.setItem("area",S.area)}catch(x){}render();window.scrollTo(0,0)});
-$("tabs").addEventListener("click",function(e){var b=e.target.closest("button[data-tab]");if(!b)return;if(S.area!=="camara"){S.ftab=b.dataset.tab;S.fq="";S.fconfirm=false;S.flimpiar=false;try{localStorage.setItem("ftab",S.ftab)}catch(x){}render();window.scrollTo(0,0);return}S.tab=b.dataset.tab;S.q="";S.confirm=false;S.limpiar=false;try{localStorage.setItem("tab",S.tab)}catch(x){}render();window.scrollTo(0,0)});
+$("tabs").addEventListener("click",function(e){var b=e.target.closest("button[data-tab]");if(!b)return;if(S.area!=="camara"){S.ftab=b.dataset.tab;S.fq="";S.fconfirm=false;S.flimpiar=false;try{localStorage.setItem("ftab",S.ftab)}catch(x){}render();window.scrollTo(0,0);return}S.tab=b.dataset.tab;S.q="";S.confirm=false;S.limpiar=false;S.gmsg=null;try{localStorage.setItem("tab",S.tab)}catch(x){}render();window.scrollTo(0,0)});
 function parse(v){v=String(v).replace(/[^\d]/g,"");return v===""?null:Math.min(9999,parseInt(v,10))}
-function onClick(e){if(S.area!=="camara"&&fzClick(e))return;var el=e.target.closest("[data-a],[data-rubro],[data-filtro],[data-hist],[data-hv],[data-tend]");if(!el)return;
+function onClick(e){if(S.area!=="camara"&&fzClick(e))return;var el=e.target.closest("[data-a],[data-rubro],[data-filtro],[data-hist],[data-hv],[data-tend],[data-hcg]");if(!el)return;
+  if(el.dataset.hcg){S.hcg=S.hcg===el.dataset.hcg?null:el.dataset.hcg;S.cgRec=null;render();return}
   if(el.dataset.hv){S.hv=el.dataset.hv;S.q="";render();return}
   if(el.dataset.tend){S.tend=el.dataset.tend;render();return}
   if(el.dataset.rubro!==undefined&&!el.dataset.a){S.rubro=el.dataset.rubro;render();return}
@@ -554,6 +590,11 @@ function onClick(e){if(S.area!=="camara"&&fzClick(e))return;var el=e.target.clos
   if(a==="wsp"){abrirTexto(el.dataset.id);return}
   if(a==="xls"){excel(el.dataset.id);return}
   if(a==="pdf"){pdf(el.dataset.id);return}
+  if(a==="guardar"){guardarConteo();return}
+  if(a==="cg-rec"){S.cgRec=el.dataset.id;render();return}
+  if(a==="cg-no"){S.cgRec=null;render();return}
+  if(a==="cg-si"){var g=guardados.filter(function(x){return x.id===el.dataset.id})[0],ab=abierto();if(!g||!ab)return;flush();var nst=JSON.parse(JSON.stringify(g.stock));
+    clearTimeout(timer);timer=null;pend={stock:{},ajuste:{}};ov.stock={};ab.stock=nst;S.cgRec=null;write(function(){return DB.doc("pedidos/"+ab.id).set({fecha:ab.fecha,estado:"abierto",stock:nst,ajuste:ab.ajuste||{},guardado_at:ab.guardado?ab.guardado.at:null,guardado_n:ab.guardado?ab.guardado.n:0})});S.tab="conteo";render();toast("Conteo recuperado.");return}
   if(a==="limpiar"){if(!activos().some(function(i){return stockOf(i.c)!==null})){toast("Todavía no hay cantidades cargadas.");return}S.limpiar=true;render();return}
   if(a==="limpiar-no"){S.limpiar=false;render();return}
   if(a==="limpiar-si"){limpiar();return}
@@ -587,12 +628,13 @@ function start(){
   var go=function(db){if(DB)return;DB=db;
     var bad=function(){loaded.cat=loaded.ped=true;S.readOnly=true;setSync();render()};
     db.doc("config/catalogo").onSnapshot(function(s){var d=s.exists?s.data():null;cat=d&&Array.isArray(d.items)?{items:d.items.map(function(i){return {c:i.c,n:i.n,r:i.r,a:i.a,sc:i.sc,ub:i.ub,tu:i.tu,kg:i.kg}})}:null;loaded.cat=true;render()},bad);
-    db.collection("pedidos").onSnapshot(function(q){var first=!loaded.ped;pedidos=q.docs.map(function(d){var x=d.data()||{};return {id:d.id,fecha:x.fecha||d.id,estado:x.estado,stock:x.stock,pedido:x.pedido,ajuste:x.ajuste}});
+    db.collection("pedidos").onSnapshot(function(q){var first=!loaded.ped;pedidos=q.docs.map(function(d){var x=d.data()||{};return {id:d.id,fecha:x.fecha||d.id,estado:x.estado,stock:x.stock,pedido:x.pedido,ajuste:x.ajuste,guardado:x.guardado_at?{at:x.guardado_at,n:x.guardado_n||0}:null}});
       pedidos.sort(function(a,b){return a.fecha<b.fecha?-1:a.fecha>b.fecha?1:(a.id<b.id?-1:1)});settle();loaded.ped=true;setSync();if(first)render();else soft()},bad)};
   var goFz=function(db){["carcano","sanmartin"].forEach(function(l){db.doc("config/fz_"+l).onSnapshot(function(s){var d=s.exists?s.data():null;fzCfg[l]=d&&Array.isArray(d.items)?{items:d.items}:{items:[]};if(S.area!=="camara")render()},function(){})});
     db.collection("fzconteos").onSnapshot(function(q){fzCont=q.docs.map(function(d){var x=d.data()||{};return {id:d.id,local:x.local,fecha:x.fecha||"",estado:x.estado,stock:x.stock||{}}});
       fzCont.sort(function(a,b){return a.fecha<b.fecha?-1:a.fecha>b.fecha?1:(a.id<b.id?-1:1)});fzSettle();setSync();if(S.area!=="camara")fzSoft()},function(){})};
-  var go0=go;go=function(db){if(DB)return;go0(db);goFz(db)};
+  var goCg=function(db){db.collection("conteos_guardados").onSnapshot(function(q){guardados=q.docs.map(function(d){var x=d.data()||{};return {id:d.id,fecha:x.fecha||"",at:x.at||"",pedido:x.pedido||"",stock:x.stock||{}}});guardados.sort(function(a,b){return a.at<b.at?1:-1});if(S.area==="camara"&&S.tab==="historial")render()},function(){})};
+  var go0=go;go=function(db){if(DB)return;go0(db);goFz(db);goCg(db)};
   if(window.CAMDB)go(window.CAMDB);else window.addEventListener("cam-ready",function(){go(window.CAMDB)});
   setTimeout(function(){if(!DB){loaded.cat=loaded.ped=true;setSync();render()}},12000)}
 start();
